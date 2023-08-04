@@ -63,7 +63,6 @@ bool state = false;   // 是否采集完成
 //    state = !state;
 //}
 
-uint16_t numX = 0;
 
 // 显示/波赋值
 void PrintVector(double *vData, uint16_t bufferSize) {
@@ -86,47 +85,38 @@ void PrintVector(double *vData, uint16_t bufferSize) {
         tmp[i] = ((uint32_t) vData[i]) >> 10;
     }
 
-    uint16_t Aa, Ab;
-    for (uint16_t i = 0; i < bufferSize; i++) {
+    uint16_t Aa, Ab, numX = 0;
+    for (uint16_t i = 15; i <= 100; i++) {
         auto hz = ((i * 1.0 * samplingFrequency) / samples / 1000);
         auto hz_ture = (uint16_t) ceil(hz / 5) * 5;
-        if (hz > 150 ){
-            numX += (tmp[i] >= 9);   // ???????????
-        }
-        if (hz >= 15 && tmp[i] > 150 && (waveNum == 0 || hz_ture != wave[0].frequency)) {
+        if ( tmp[i] > 150 && (waveNum == 0 || hz_ture != wave[0].frequency)) {
             wave[waveNum].frequency = hz_ture;
 //            wave[waveNum].sin = tmp[i]>180;
             if (waveNum == 0) {
                 Aa = tmp[i] > tmp[i + 1] ? tmp[i] : tmp[i + 1];
             } else {
                 Ab = tmp[i] > tmp[i + 1] ? tmp[i] : tmp[i + 1];
-                if (Aa - Ab > 20) {
-                    wave[0].sin = true, wave[1].sin = false;
-                } else if (Ab - Aa > 20) {
-                    wave[0].sin = false, wave[1].sin = true;
-                } else if (numX >= 2) {
-                    wave[0].sin = false, wave[1].sin = false;
-                } else {
-                    Serial.println(numX);
-                    wave[0].sin = true, wave[1].sin = true;
-                }
             }
-            numX = 0;
 
-//            for (int j = 3 * i - 2; j <= i * 3 + 2; ++j) {
-////                if ((tmp[j - 2] < 10 || tmp[j + 2] < 10) && (tmp[j]/tmp[j-2] >= 3)) {
-//                if (tmp[j]>=10 && tmp[j]/tmp[j-2] >= 3) {
-//                    wave[waveNum].sin = false;
-//                    break;
-//                } else {
-//                    wave[waveNum].sin = true;
-//                }
-//            }
             if (++waveNum >= 2) {
                 waveNum = 0;
                 break;
             }
         }
+    }
+
+    for (uint16_t i = 200; i < bufferSize; ++i) {
+        numX += (tmp[i] >= 9);
+    }
+    if (Aa - Ab > 20) {
+        wave[0].sin = true, wave[1].sin = false;
+    } else if (Ab - Aa > 20) {
+        wave[0].sin = false, wave[1].sin = true;
+    } else if (numX >= 2) {
+        wave[0].sin = false, wave[1].sin = false;
+    } else {
+//        Serial.println(numX);
+        wave[0].sin = true, wave[1].sin = true;
     }
 
 
