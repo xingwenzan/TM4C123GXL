@@ -1,21 +1,19 @@
 #include "Energia.h"
-//#include <stdint.h>
 #include "inc/tm4c123gh6pm.h"
 #include "inc/hw_memmap.h"
 #include "driverlib/sysctl.h"
-//#include "driverlib/gpio.h"
 #include "driverlib/timer.h"
 #include "driverlib/interrupt.h"
 #include "../lib/arduinoFFT/src/arduinoFFT.h"
+//#include "driverlib/gpio.h"
+//#include <stdint.h>
 
+//#define InterruptPinA 39
+//#define InterruptPinB 40
 
 #define LED_RED   30
 #define LED_BLUE  40
 #define LED_GREEN 39
-//#define GPIO_LED_BASE GPIO_PORTF_BASE
-
-//#define CHANNEL_A 3
-//#define CHANNEL_B 4
 
 #define SYSCTL_PERIPH_TIMERX  SYSCTL_PERIPH_TIMER2      //TIMERx 时钟
 #define TIMERX_BASE           TIMER2_BASE               //TIMERx 地址
@@ -28,11 +26,6 @@
 #define TIMER_INTERVAL_NUM    1024000                   //TIMER  中断分频系数
 #define TimerLoadSetNUM       (((SysCtlClockGet() / TIMER_INTERVAL_NUM)) -1)
 
-// 幅频结构体
-typedef struct {
-    uint16_t KHZ;
-    uint16_t A;
-} AF;
 
 // A、B 波形结构体
 typedef struct {
@@ -40,10 +33,9 @@ typedef struct {
     bool sin;
 } WAVE;
 
-// 排序、波形参数
-AF q[19];
-uint16_t afNum = 0;
-WAVE A, B;
+// 波形参数
+WAVE wave[2];
+uint16_t waveNum = 0;
 
 // FFT 参数
 arduinoFFT FFT;
@@ -56,137 +48,97 @@ Input vectors receive computed results from FFT
 double vReal[samples];
 double vImag[samples];
 
-// 输出参数
-uint16_t password = 0;
-uint16_t p0 = 0;
-const int pinsA[] = {11, 12, 13, 14, 15, 16};
-const int pinsB[] = {31, 32, 33, 34, 35, 36};
 
 // 定时器参数
 uint8_t num;
 uint16_t admem[1024];
 uint16_t admemNum = 0;
+bool state = false;   // 是否采集完成
 
+// 按键控制开关参数
+//volatile bool state = 0;
 
-// 排序
-void sort(int l, int r) {
-    if (l >= r) {
-        return;
-    }
-    int i = l - 1, j = r + 1;
-    double x = q[(i + j) >> 1].A;
-    while (i < j) {
-        while (q[++i].A > x) {}
-        while (q[--j].A < x) {}
-        if (i < j) {
-            AF tmp = q[i];
-            q[i] = q[j], q[j] = tmp;
-        }
-    }
-    sort(l, j);
-    sort(j + 1, r);
-}
+// 外部中断
+//void myISR(){
+//    state = !state;
+//}
 
-// 判断是否为正弦波
-bool isSin(WAVE x) {
-    return vReal[x.frequency * 3] < 1e4;
-}
+uint16_t numX = 0;
 
 // 显示/波赋值
 void PrintVector(double *vData, uint16_t bufferSize) {
 //    for (uint16_t i = 0; i < bufferSize; i++) {
-//        double abscissa = (i * 1.0 * samplingFrequency) / samples;
+//        double abscissa = (i * 1.0 * samplingFrequency) / samples / 1000;
 //        Serial.print(abscissa, 6);
 //        Serial.print("kHz ");
-//        Serial.println(vData[i], 4);
+//        auto tmp1 = (uint16_t) ceil(abscissa / 5) * 5;
+//        Serial.print(tmp1);
+//        Serial.print("kHz ");
+//        Serial.print(vData[i], 4);
+//        Serial.print("   ");
+//        uint32_t tmp0 = ((uint32_t) vData[i]) >> 10;
+//        Serial.println(tmp0);
 //    }
+//    Serial.println();
 
+    uint32_t tmp[bufferSize];
     for (uint16_t i = 0; i < bufferSize; i++) {
-        auto hz = (uint16_t) ((i * 1.0 * samplingFrequency) / samples / 1000);
-        if (hz >= 20 && hz % 5 == 0) {
-            q[afNum++] = {hz, (uint16_t) vData[i]};
-            if (hz >= 100 || afNum >= 19) {
-                afNum = 0;
+        tmp[i] = ((uint32_t) vData[i]) >> 10;
+    }
+
+    uint16_t Aa, Ab;
+    for (uint16_t i = 0; i < bufferSize; i++) {
+        auto hz = ((i * 1.0 * samplingFrequency) / samples / 1000);
+        auto hz_ture = (uint16_t) ceil(hz / 5) * 5;
+        if (hz > 150 ){
+            numX += (tmp[i] >= 9);   // ???????????
+        }
+        if (hz >= 15 && tmp[i] > 150 && (waveNum == 0 || hz_ture != wave[0].frequency)) {
+            wave[waveNum].frequency = hz_ture;
+//            wave[waveNum].sin = tmp[i]>180;
+            if (waveNum == 0) {
+                Aa = tmp[i] > tmp[i + 1] ? tmp[i] : tmp[i + 1];
+            } else {
+                Ab = tmp[i] > tmp[i + 1] ? tmp[i] : tmp[i + 1];
+                if (Aa - Ab > 20) {
+                    wave[0].sin = true, wave[1].sin = false;
+                } else if (Ab - Aa > 20) {
+                    wave[0].sin = false, wave[1].sin = true;
+                } else if (numX >= 2) {
+                    wave[0].sin = false, wave[1].sin = false;
+                } else {
+                    Serial.println(numX);
+                    wave[0].sin = true, wave[1].sin = true;
+                }
+            }
+            numX = 0;
+
+//            for (int j = 3 * i - 2; j <= i * 3 + 2; ++j) {
+////                if ((tmp[j - 2] < 10 || tmp[j + 2] < 10) && (tmp[j]/tmp[j-2] >= 3)) {
+//                if (tmp[j]>=10 && tmp[j]/tmp[j-2] >= 3) {
+//                    wave[waveNum].sin = false;
+//                    break;
+//                } else {
+//                    wave[waveNum].sin = true;
+//                }
+//            }
+            if (++waveNum >= 2) {
+                waveNum = 0;
                 break;
             }
         }
-//        Serial.println(q[i].A);
     }
 
-    sort(0, 18);
 
-//    Serial.println(q[1].KHZ);
-//    Serial.println(q[2].KHZ);
-
-//    for (auto &i: q) {
-////        wave[waveNum].frequency = i.KHZ;
-////        wave[waveNum].sin = isSin(wave[waveNum]);
-////        waveNum++;
-////        if (waveNum >= 2) {
-////            waveNum = 0;
-////            break;
-////        }
-//        Serial.print(i.KHZ);
-//        Serial.print("Khz ");
-//        Serial.println(i.A);
-//    }
-
-    if (q[0].KHZ > q[1].KHZ) {
-        B.frequency = q[0].KHZ, A.frequency = q[1].KHZ;
-    } else {
-        B.frequency = q[1].KHZ, A.frequency = q[0].KHZ;
-    }
-
-    A.sin = isSin(A);
-    B.sin = isSin(B);
-
-    /*
-     * 12 位密码
-     * 高 6 位为 A，低 6 位为 B
-     * 每 6 位中，高 1 位为波形，低 5 位为频率（1-19）
-     * 频率 * 5 * 1k 为实际频率
-     */
-
-    password = ((A.sin << 11) + ((A.frequency / 5) << 6) + (B.sin << 5) + (B.frequency / 5));
-    for (int i = 0; i < 6; ++i) {
-        digitalWrite(pinsA[i], (password >> (11 - i)) & 0x001);
-        digitalWrite(pinsB[i], (password >> (5 - i)) & 0x001);
-    }
-//    if (password != p0) {
-////        Serial.println(password);
-//        p0 = password;
-//        for (int i = 0; i < 6; ++i) {
-//            digitalWrite(pinsA[i], (password >> (11 - i)) & 0x001);
-//            digitalWrite(pinsB[i], (password >> (5 - i)) & 0x001);
-//        }
-////        for (int i = 0; i < 6; ++i) {
-////            digitalWrite(pinsA[i], (password >> (6+i)) & 0x001);
-////            digitalWrite(pinsB[i], (password >>  i) & 0x001);
-////        }
-//    }
-
-//    Serial.print(password);
-//    Serial.write(password);
-
-//    Serial.print(A.frequency);
-//    Serial.print("kHz   sin ");
-//    Serial.println(A.sin);
-//    Serial.print(B.frequency);
-//    Serial.print("kHz   sin ");
-//    Serial.println(B.sin);
-//    Serial.println();
-
-//    uint8_t password;
-//    password = (A.sin<<5)+(A.frequency/5);
-//    analogWrite(CHANNEL_A,password);
-//    Serial.println(password);
-//    delay(1000);
-//    password = (B.sin<<5)+(A.frequency/5);
-//    analogWrite(CHANNEL_B,password);
-//    Serial.println(password);
-//    delay(1000);
-//    Serial.println();
+    Serial.print(wave[0].frequency);
+    Serial.print("kHz   sin ");
+    Serial.println(wave[0].sin);
+    Serial.print(wave[1].frequency);
+    Serial.print("kHz   sin ");
+    Serial.println(wave[1].sin);
+    Serial.println("\n");
 }
+
 
 // 定时器中断工作内容
 void TimerXIntHandler(void) {
@@ -207,67 +159,45 @@ void TimerXIntHandler(void) {
     while ((ADC0_RIS_R & 0x08) == 0) {} // 等待转换完成
     admem[admemNum++] = ADC0_SSFIFO3_R & 0xFFF;
     ADC0_PSSI_R = 0x08;         // 开始转换，SS3
+
     if (admemNum >= 1024) {
         admemNum = 0;
-        digitalWrite(LED_RED, !digitalRead(LED_RED));
-        for (uint16_t i = 0; i < samples; i++) {
-            vReal[i] = admem[i];/* Build data with positive and negative values*/
-            //vReal[i] = uint8_t((amplitude * (sin((i * (twoPi * cycles)) / samples) + 1.0)) / 2.0);/* Build data displaced on the Y axis to include only positive values*/
-            vImag[i] = 0.0; //Imaginary part must be zeroed in case of looping to avoid wrong calculations and overflows
-        }
-
-        FFT = arduinoFFT(vReal, vImag, samples, samplingFrequency); /* Create FFT object */
-        /* Print the results of the simulated sampling according to time */
-//        Serial.println("Data:");
-//        PrintVector(vReal, samples);
-        FFT.Windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);    /* Weigh data */
-//        Serial.println("Weighed data:");
-//        PrintVector(vReal, samples);
-        FFT.Compute(FFT_FORWARD); /* Compute FFT */
-//        Serial.println("Computed Real values:");
-//        PrintVector(vReal, samples);
-//        Serial.println("Computed Imaginary values:");
-//        PrintVector(vImag, samples);
-        FFT.ComplexToMagnitude(); /* Compute magnitudes */
-//        Serial.println("Computed magnitudes:");
-        PrintVector(vReal, (samples >> 1));
-
-//        double x = FFT.MajorPeak();
-//        Serial.println(x, 6);
-
-//        int x = (int) (ceil(FFT.MajorPeak() / 1000) / 5) * 5;
-//        Serial.print(x);
-//        Serial.println("kHz");
+//        digitalWrite(LED_RED, !digitalRead(LED_RED));
+        state = true;
     }
 
     //digitalWrite(LED_RED, !digitalRead(LED_RED));
 }
 
+
 // 定时器初始化
 void TimerInt_Init() {
 //    uint32_t ui32Period;
 
-    SysCtlPeripheralEnable(
-            SYSCTL_PERIPH_TIMERX);                                                                    //使能定时器0时钟
+    SysCtlPeripheralEnable(SYSCTL_PERIPH_TIMERX);   //使能定时器0时钟
     TimerConfigure(TIMERX_BASE,
-                   TIMER_CFG_X);                                                                        //定时器的高层配置，这里设为全字长周期定时
-    //ui32Period = (SysCtlClockGet() / TIMER_INTERVAL_NUM) / 2;											//SysCtlClockGet()返回系统时钟频率（也是除了PWM外其他模块的频率）
+                   TIMER_CFG_X);   //定时器的高层配置，这里设为全字长周期定时
+    //ui32Period = (SysCtlClockGet() / TIMER_INTERVAL_NUM) / 2;	  //SysCtlClockGet()返回系统时钟频率（也是除了PWM外其他模块的频率）
     TimerLoadSet(TIMERX_BASE, TIMER_AorB,
-                 TimerLoadSetNUM);                                                    //设置定时器重装载值（第二个参数指定的要调整的定时器，全字长周期只能写TIMER_A）
+                 TimerLoadSetNUM);   //设置定时器重装载值（第二个参数指定的要调整的定时器，全字长周期只能写TIMER_A）
     TimerIntRegister(TIMERX_BASE, TIMER_AorB,
-                     TimerXIntHandler);                                        //注册中断，将中断触发和中断服务函数联系起来（实质上是修改.s中的中断向量表，第二个参数是函数指针，也可以手动注册）
+                     TimerXIntHandler);   //注册中断，将中断触发和中断服务函数联系起来（实质上是修改.s中的中断向量表，第二个参数是函数指针，也可以手动注册）
     TimerIntEnable(TIMERX_BASE,
-                   TIMER_TIMAorB_INTx);                                                            //使能单个的定时器中断源
+                   TIMER_TIMAorB_INTx);   //使能单个的定时器中断源
     IntEnable(
-            INT_TIMERXAorB);                                                                                                        //使能中断
-    IntMasterEnable();                                                                                                                        //这个函数允许处理器响应中断。不影响中断控制器的中断使能设置
+            INT_TIMERXAorB);   //使能中断
+    IntMasterEnable();   //这个函数允许处理器响应中断。不影响中断控制器的中断使能设置
     TimerEnable(TIMERX_BASE, TIMER_AorB);
 }
 
+
 void setup() {
 
-    A = {0, false};
-    B = {0, false};
+//    pinMode(OPEN_PIN,INPUT);
+//    attachInterrupt(2, myISR, CHANGE);
+
+    wave[0] = {0, false};
+    wave[1] = {0, false};
 
     pinMode(LED_BLUE, OUTPUT);
     pinMode(LED_RED, OUTPUT);
@@ -303,36 +233,42 @@ void setup() {
 
     ADC0_PSSI_R = 0x08;         // 开始转换，SS3
 
-//    Serial.begin(9600);
+    Serial.begin(1000000);
 //    pinMode(CHANNEL_A,OUTPUT);
 //    pinMode(CHANNEL_B,OUTPUT);
 //    Serial.println(SysCtlClockGet());
-    for (int i = 11, j = 31; i <= 16; ++i, ++j) {
-        pinMode(i, OUTPUT);
-        digitalWrite(i, 0);
-        pinMode(j, OUTPUT);
-        digitalWrite(j, 0);
-    }
+
+//    pinMode(InterruptPinA, OUTPUT);
+//    digitalWrite(InterruptPinA, 1);
+//    pinMode(InterruptPinB, OUTPUT);
+//    digitalWrite(InterruptPinB, 1);
+//    for (int i = 11, j = 31; i <= 16; ++i, ++j) {
+//        pinMode(i, OUTPUT);
+//        digitalWrite(i, 0);
+//        pinMode(j, OUTPUT);
+//        digitalWrite(j, 0);
+//    }
 
     TimerInt_Init();
 
 }
 
-void loop() {
-//    uint8_t password;
-//    password = (A.sin<<5)+(A.frequency/5);
-//    analogWrite(CHANNEL_A,password);
-//    Serial.println(password);
-//    delay(1000);
-//    password = (B.sin<<5)+(A.frequency/5);
-//    analogWrite(CHANNEL_B,password);
-//    Serial.println(password);
-//    delay(1000);
-//    Serial.println();
 
-//    digitalWrite(LED_BLUE, HIGH);  // turn the LED on (HIGH is the voltage level)
-//    delay(2000);                      // wait for a second
-//    digitalWrite(LED_BLUE, LOW);   // turn the LED off by making the voltage LOW
-//    delay(2000);                      // wait for a second
+void loop() {
+    if (state) {
+        state = false;
+        for (uint16_t i = 0; i < samples; i++) {
+            vReal[i] = admem[i];/* Build data with positive and negative values*/
+            //vReal[i] = uint8_t((amplitude * (sin((i * (twoPi * cycles)) / samples) + 1.0)) / 2.0);/* Build data displaced on the Y axis to include only positive values*/
+            vImag[i] = 0.0; //Imaginary part must be zeroed in case of looping to avoid wrong calculations and overflows
+        }
+        FFT = arduinoFFT(vReal, vImag, samples, samplingFrequency); /* Create FFT object */
+        /* Print the results of the simulated sampling according to time */
+        FFT.Windowing(FFT_WIN_TYP_HAMMING, FFT_FORWARD);    /* Weigh data */
+        FFT.Compute(FFT_FORWARD); /* Compute FFT */
+        FFT.ComplexToMagnitude(); /* Compute magnitudes */
+        PrintVector(vReal, (samples >> 1));
+    }
+
 }
 

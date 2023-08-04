@@ -1,18 +1,20 @@
 #include "Energia.h"
-#include <stdint.h>
 #include "inc/tm4c123gh6pm.h"
 #include "inc/hw_memmap.h"
 #include "driverlib/sysctl.h"
-#include "driverlib/gpio.h"
 #include "driverlib/timer.h"
 #include "driverlib/interrupt.h"
 #include "../lib/arduinoFFT/src/arduinoFFT.h"
+//#include "driverlib/gpio.h"
+//#include <stdint.h>
 
+#define InterruptPinA 39
+#define InterruptPinB 40
 
 #define LED_RED   30
 #define LED_BLUE  40
 #define LED_GREEN 39
-#define GPIO_LED_BASE GPIO_PORTF_BASE
+//#define GPIO_LED_BASE GPIO_PORTF_BASE
 
 //#define CHANNEL_A 3
 //#define CHANNEL_B 4
@@ -56,9 +58,11 @@ Input vectors receive computed results from FFT
 double vReal[samples];
 double vImag[samples];
 
-// 串口输出参数
+// 输出参数
 uint16_t password = 0;
 uint16_t p0 = 0;
+const int pinsA[] = {10, 9, 8, 7, 6, 5};
+const int pinsB[] = {31, 32, 33, 34, 35, 36};
 
 // 定时器参数
 uint8_t num;
@@ -85,10 +89,12 @@ void sort(int l, int r) {
     sort(j + 1, r);
 }
 
+
 // 判断是否为正弦波
 bool isSin(WAVE x) {
     return vReal[x.frequency * 3] < 1e4;
 }
+
 
 // 显示/波赋值
 void PrintVector(double *vData, uint16_t bufferSize) {
@@ -100,7 +106,7 @@ void PrintVector(double *vData, uint16_t bufferSize) {
 //    }
 
     for (uint16_t i = 0; i < bufferSize; i++) {
-        uint16_t hz = (uint16_t) ((i * 1.0 * samplingFrequency) / samples / 1000);
+        auto hz = (uint16_t) ((i * 1.0 * samplingFrequency) / samples / 1000);
         if (hz >= 20 && hz % 5 == 0) {
             q[afNum++] = {hz, (uint16_t) vData[i]};
             if (hz >= 100 || afNum >= 19) {
@@ -144,39 +150,37 @@ void PrintVector(double *vData, uint16_t bufferSize) {
      * 每 6 位中，高 1 位为波形，低 5 位为频率（1-19）
      * 频率 * 5 * 1k 为实际频率
      */
+//
+//    password = ((A.sin << 11) + ((A.frequency / 5) << 6) + (B.sin << 5) + (B.frequency / 5));
+//    if (password != p0) {
+//        Serial.println(password);
+//        digitalWrite(InterruptPinA, !digitalRead(InterruptPinA));
+//        digitalWrite(InterruptPinB,!digitalRead(InterruptPinB));
+//        p0 = password;
+//        for (int i = 0; i < 6; ++i) {
+//            digitalWrite(pinsA[i], (password >> (11 - i)) & 0x001);
+////            delayMicroseconds(5);
+//            digitalWrite(pinsB[i], (password >> (5 - i)) & 0x001);
+////            delayMicroseconds(5);
+//        }
+////        delayMicroseconds(5);
+////        digitalWrite(InterruptPinA,LOW);
+////        digitalWrite(InterruptPinB,LOW);
+////        for (int i = 0; i < 6; ++i) {
+////            digitalWrite(pinsA[i], (password >> (6+i)) & 0x001);
+////            digitalWrite(pinsB[i], (password >>  i) & 0x001);
+////        }
+//    }
 
-    password = ((A.sin << 11) + ((A.frequency / 5) << 6) + (B.sin << 5) + (A.frequency / 5));
-    if (password != p0) {
-        Serial.println(password);
-        p0 = password;
-        for (uint8_t pin_i = 11, pin_j = 31, i = 11, j = 5; pin_i <= 16; ++pin_i, ++pin_j, --i, --j) {
-            digitalWrite(pin_i, (password >> i) & 0x01);
-            digitalWrite(pin_j, (password >> j) & 0x01);
-        }
-    }
-
-//    Serial.print(password);
-//    Serial.write(password);
-
-//    Serial.print(A.frequency);
-//    Serial.print("kHz   sin ");
-//    Serial.println(A.sin);
-//    Serial.print(B.frequency);
-//    Serial.print("kHz   sin ");
-//    Serial.println(B.sin);
-//    Serial.println();
-
-//    uint8_t password;
-//    password = (A.sin<<5)+(A.frequency/5);
-//    analogWrite(CHANNEL_A,password);
-//    Serial.println(password);
-//    delay(1000);
-//    password = (B.sin<<5)+(A.frequency/5);
-//    analogWrite(CHANNEL_B,password);
-//    Serial.println(password);
-//    delay(1000);
-//    Serial.println();
+    Serial.print(A.frequency);
+    Serial.print("kHz   sin ");
+    Serial.println(A.sin);
+    Serial.print(B.frequency);
+    Serial.print("kHz   sin ");
+    Serial.println(B.sin);
+    Serial.println();
 }
+
 
 // 定时器中断工作内容
 void TimerXIntHandler(void) {
@@ -233,8 +237,9 @@ void TimerXIntHandler(void) {
     //digitalWrite(LED_RED, !digitalRead(LED_RED));
 }
 
+
 // 定时器初始化
-void TimerInt_Init(void) {
+void TimerInt_Init() {
 //    uint32_t ui32Period;
 
     SysCtlPeripheralEnable(
@@ -254,6 +259,7 @@ void TimerInt_Init(void) {
     TimerEnable(TIMERX_BASE, TIMER_AorB);
 }
 
+
 void setup() {
 
     A = {0, false};
@@ -263,7 +269,7 @@ void setup() {
     pinMode(LED_RED, OUTPUT);
     pinMode(LED_GREEN, OUTPUT);
 
-    digitalWrite(LED_RED, LOW);
+    digitalWrite(LED_RED, HIGH);
 
     GPIO_PORTF_LOCK_R = GPIO_LOCK_KEY; // 解锁Port F引脚
     GPIO_PORTF_CR_R = 0x1F;            // 允许更改PF4-PF0引脚
@@ -297,14 +303,21 @@ void setup() {
 //    pinMode(CHANNEL_A,OUTPUT);
 //    pinMode(CHANNEL_B,OUTPUT);
 //    Serial.println(SysCtlClockGet());
+    pinMode(InterruptPinA, OUTPUT);
+    digitalWrite(InterruptPinA, 1);
+    pinMode(InterruptPinB, OUTPUT);
+    digitalWrite(InterruptPinB, 1);
     for (int i = 11, j = 31; i <= 16; ++i, ++j) {
         pinMode(i, OUTPUT);
+        digitalWrite(i, 0);
         pinMode(j, OUTPUT);
+        digitalWrite(j, 0);
     }
 
     TimerInt_Init();
 
 }
+
 
 void loop() {
 //    uint8_t password;
